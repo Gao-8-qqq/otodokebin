@@ -906,7 +906,6 @@ function MeTab({ user, toast, reloadKey, openLogin, openRules }) {
       <footer className="foot">
         <button className="linkish" onClick={openRules}>利用のきまり</button>
         <a className="linkish" href="privacy.html">プライバシーポリシー</a>
-        <div className="sister-line">姉妹サイト：<a href="https://uchinoko.otodokebin.com/">うちの子イメソン便</a></div>
       </footer>
 
       {bye && <Confirm title="アカウントを削除する？" body="流したセトリ、届いたスタンプ、受け取った記録がすべて消えて、元に戻せないよ。" okLabel="削除する" danger onOk={deleteAccount} onCancel={() => setBye(false)} />}
