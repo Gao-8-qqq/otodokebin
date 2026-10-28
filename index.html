@@ -349,6 +349,7 @@ function errMsg(e) {
   if (m.includes('daily_limit_reached')) return '今日の受け取りはここまで。また明日届くよ。';
   if (m.includes('login_required')) return 'この機能はログインが必要だよ。';
   if (m.includes('tracks_must_be_3_to_10')) return '曲は3〜10曲で作ってね。';
+  if (m.includes('create_limit_reached')) return '今日流せるセトリはここまで。また明日ね。';
   if (m.includes('setlists_comment_check')) return 'ひとことは100字以内で、URLやSNSのIDは書けないよ。';
   if (m.includes('duplicate key')) return 'もう送信済みだよ。';
   if (m.includes('row-level security')) return 'その操作はできないみたい。';
@@ -640,13 +641,13 @@ function ReceiveTab({ scenes, toast, goCreate }) {
 // ===== 作る =====
 const emptyTrack = () => ({ url: '', title: '', artist: '', thumbnail: '', service: null, loading: false });
 
-function CreateTab({ user, scenes, toast, onCreated, openLogin }) {
+function CreateTab({ user, scenes, toast, onCreated, openLogin, guestCanCreate }) {
   const [sceneId, setSceneId] = useState(null);
   const [tracks, setTracks] = useState([emptyTrack(), emptyTrack(), emptyTrack()]);
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
 
-  if (!user || user.is_anonymous) {
+  if (!user || (user.is_anonymous && !guestCanCreate)) {
     return (
       <div>
         <h2>セトリを流す</h2>
@@ -908,6 +909,7 @@ function Rules({ onClose }) {
 function App() {
   const [user, setUser] = useState(undefined);
   const [scenes, setScenes] = useState([]);
+  const [guestCanCreate, setGuestCanCreate] = useState(false);
   const [tab, setTab] = useState('receive');
   const [toastText, setToastText] = useState('');
   const [loginOpen, setLoginOpen] = useState(false);
@@ -935,6 +937,9 @@ function App() {
       if (event === 'SIGNED_OUT') { ensureUser(); return; }
       if (session) setUser(session.user);
       if (event === 'SIGNED_IN' && session && !session.user.is_anonymous) setLoginOpen(false);
+    });
+    sb.from('app_settings').select('guest_can_create').eq('id', 1).maybeSingle().then(({ data }) => {
+      setGuestCanCreate(!!(data && data.guest_can_create));
     });
     sb.from('scenes').select('id,name').order('sort_order').then(({ data, error }) => {
       if (error) setFatal('シーンを読み込めなかった…（' + error.message + '）');
@@ -967,7 +972,7 @@ function App() {
       {fatal && <div className="card" style={{ borderColor: 'var(--danger)' }}><p className="hint err" style={{ margin: 0 }}>{fatal}</p></div>}
 
       {tab === 'receive' && <ReceiveTab scenes={scenes} toast={toast} goCreate={() => setTab('create')} />}
-      {tab === 'create' && <CreateTab user={user} scenes={scenes} toast={toast}
+      {tab === 'create' && <CreateTab user={user} scenes={scenes} toast={toast} guestCanCreate={guestCanCreate}
                                       openLogin={() => setLoginOpen(true)}
                                       onCreated={() => { setReloadKey(k => k + 1); setTab('me'); }} />}
       {tab === 'me' && <MeTab user={user} toast={toast} reloadKey={reloadKey}
