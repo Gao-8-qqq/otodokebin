@@ -305,6 +305,14 @@ const SUPABASE_URL = 'https://xqnhxjepxzglmsnmdrvm.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_FRoeyOoJFYtM7QsQ8cjuqw_2yqFF7bj';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// ゲストは「受け取る」「流す」を押したときに初めて作る（開いただけでは作らない）
+async function ensureGuest() {
+  const { data } = await sb.auth.getSession();
+  if (data.session) return;
+  const res = await sb.auth.signInAnonymously();
+  if (res.error) throw new Error('ゲストで始められなかった…（' + res.error.message + '）');
+}
+
 const STAMPS = [
   { id: 'sasatta', label: '刺さった' },
   { id: 'naita',   label: '泣いた' },
@@ -341,6 +349,7 @@ function detectService(raw) {
 // まずSupabaseの track-info（song.link経由で全サービス対応）、だめならブラウザから直接
 async function fetchMeta(url, service) {
   try {
+    await ensureGuest();
     const { data, error } = await sb.functions.invoke('track-info', { body: { url } });
     if (!error && data && (data.title || data.artist)) {
       return { title: data.title || '', artist: data.artist || '', thumbnail: data.thumbnail || '' };
@@ -552,6 +561,7 @@ function ReceiveTab({ scenes, toast, goCreate }) {
   const receive = async (scene) => {
     setBusy(true); setNone(null);
     try {
+      await ensureGuest();
       const { data, error } = await sb.rpc('receive_setlist', { p_scene_id: scene.id });
       if (error) throw error;
       if (!data) { setNone(scene.name); return; }
@@ -672,7 +682,7 @@ function CreateTab({ user, scenes, toast, onCreated, openLogin, guestCanCreate }
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
 
-  if (!user || (user.is_anonymous && !guestCanCreate)) {
+  if (user ? (user.is_anonymous && !guestCanCreate) : !guestCanCreate) {
     return (
       <div>
         <h2>セトリを流す</h2>
@@ -717,6 +727,7 @@ function CreateTab({ user, scenes, toast, onCreated, openLogin, guestCanCreate }
         artist: t.artist.trim() || null,
         thumbnail: t.thumbnail || null,
       }));
+      await ensureGuest();
       const { error } = await sb.rpc('create_setlist', { p_scene_id: sceneId, p_comment: comment, p_tracks: payload });
       if (error) throw error;
       toast('セトリを流したよ。誰かに届きますように');
@@ -732,7 +743,7 @@ function CreateTab({ user, scenes, toast, onCreated, openLogin, guestCanCreate }
   return (
     <div>
       <h2>セトリを流す</h2>
-      {user.is_anonymous && (
+      {(!user || user.is_anonymous) && (
         <p className="hint" style={{ marginTop: -4 }}>
           ゲストのままでも流せるよ。ただ、ゲストで流したセトリはこの端末のこのブラウザでしか見返せないから、
           残したいなら<button className="linkish" style={{ padding: 0 }} onClick={openLogin}>ログイン</button>がおすすめ。
@@ -955,16 +966,11 @@ function App() {
 
   useEffect(() => {
     let alive = true;
-    const ensureUser = async () => {
-      const { data } = await sb.auth.getSession();
-      if (data.session) { if (alive) setUser(data.session.user); return; }
-      const res = await sb.auth.signInAnonymously();
-      if (res.error) { if (alive) { setFatal('ゲストで始められなかった…（' + res.error.message + '）'); setUser(null); } return; }
-      if (alive) setUser(res.data.user);
-    };
-    ensureUser();
+    sb.auth.getSession().then(({ data }) => {
+      if (alive) setUser(data.session ? data.session.user : null);
+    });
     const { data: sub } = sb.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT') { ensureUser(); return; }
+      if (event === 'SIGNED_OUT') { setUser(null); return; }
       if (session) setUser(session.user);
       if (event === 'SIGNED_IN' && session && !session.user.is_anonymous) setLoginOpen(false);
     });
