@@ -290,11 +290,8 @@
 
   .loading { text-align: center; color: var(--muted); padding: 60px 0; }
   footer.foot { text-align: center; margin-top: 32px; }
-  .sister { display: flex; align-items: center; gap: 12px; margin-top: 28px; padding: 14px 16px; border: 1px dashed #3a4777; border-radius: 18px; text-decoration: none; color: var(--text); }
-  .sister:hover { border-color: var(--violet); }
-  .sister .mark { width: 40px; height: 40px; flex: none; border-radius: 10px; background: #fcfcfa; color: #121317; display: grid; place-items: center; font-weight: 700; font-size: 18px; }
-  .sister b { display: block; font-size: 14px; }
-  .sister span { font-size: 12px; color: var(--muted); }
+  .sister-line { margin-top: 6px; font-size: 11px; color: var(--muted); }
+  .sister-line a { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -651,10 +648,6 @@ function ReceiveTab({ scenes, toast, goCreate }) {
           </button>
         ))}
       </div>
-      <a className="sister" href="https://uchinoko.otodokebin.com/">
-        <span className="mark" aria-hidden="true">子</span>
-        <span><b>うちの子イメソン便</b><span>うちの子のイメソンを流したい人はこちら</span></span>
-      </a>
       <div className="receive-bar">
         <button className="btn" disabled={!picked || busy} onClick={() => receive(picked)}>
           {busy ? 'ボトルを探してるよ…' : picked ? `「${picked.name}」のセトリを受け取る` : '気分を選んでね'}
@@ -910,14 +903,10 @@ function MeTab({ user, toast, reloadKey, openLogin, openRules }) {
         </div>
       )}
 
-      <a className="sister" href="https://uchinoko.otodokebin.com/">
-        <span className="mark" aria-hidden="true">子</span>
-        <span><b>うちの子イメソン便</b><span>オリキャラ・自創作とイメソンを流せる姉妹サイト</span></span>
-      </a>
-
       <footer className="foot">
         <button className="linkish" onClick={openRules}>利用のきまり</button>
         <a className="linkish" href="privacy.html">プライバシーポリシー</a>
+        <div className="sister-line">姉妹サイト：<a href="https://uchinoko.otodokebin.com/">うちの子イメソン便</a></div>
       </footer>
 
       {bye && <Confirm title="アカウントを削除する？" body="流したセトリ、届いたスタンプ、受け取った記録がすべて消えて、元に戻せないよ。" okLabel="削除する" danger onOk={deleteAccount} onCancel={() => setBye(false)} />}
