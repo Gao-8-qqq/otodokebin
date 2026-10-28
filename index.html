@@ -249,9 +249,16 @@
   nav.tabs { position: fixed; left: 0; right: 0; bottom: 0; background: rgba(7, 11, 24, .92); backdrop-filter: blur(12px); border-top: 1px solid var(--wire); padding-bottom: env(safe-area-inset-bottom); z-index: 10; }
   nav.tabs .inner { max-width: 480px; margin: 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); }
   nav.tabs button { background: none; border: none; padding: 12px 0 14px; cursor: pointer; color: var(--muted); font-size: 12px; display: grid; justify-items: center; gap: 3px; }
-  nav.tabs button .ico { font-size: 19px; line-height: 1; }
+  nav.tabs button .ico { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
   nav.tabs button.on { color: var(--text); }
-  nav.tabs button.on .ico { color: var(--violet-hi); text-shadow: 0 0 6px var(--violet), 0 0 16px rgba(201, 103, 232, .7); }
+  nav.tabs button.on .ico { color: var(--violet-hi); filter: drop-shadow(0 0 3px var(--violet)) drop-shadow(0 0 8px rgba(201, 103, 232, .7)); }
+
+  /* ---- ログインの選択肢 ---- */
+  .btn.social { background: #fff; color: #1f1f1f; border: 1px solid #fff; box-shadow: none; font-weight: 700; letter-spacing: 0; }
+  .btn.social:hover:not(:disabled) { box-shadow: 0 0 14px rgba(255, 255, 255, .35); }
+  .btn.social svg { width: 18px; height: 18px; }
+  .or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin: 18px 0 12px; }
+  .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--wire); }
 
   .toast { position: fixed; left: 50%; bottom: calc(86px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--violet); box-shadow: 0 0 14px rgba(201, 103, 232, .4); padding: 10px 16px; border-radius: 12px; font-size: 14px; z-index: 30; max-width: calc(100% - 32px); }
 
@@ -471,14 +478,32 @@ function LoginForm({ user, onDone, toast }) {
       </div>
     );
   }
+  const google = async () => {
+    setBusy(true);
+    const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: REDIRECT_TO } });
+    if (error) { setBusy(false); toast(errMsg(error)); }
+  };
+
   return (
-    <form onSubmit={submit}>
-      <label className="field" htmlFor="email">メールアドレス</label>
-      <input id="email" className="input" type="email" autoComplete="email" value={email}
-             onChange={e => setEmail(e.target.value)} placeholder="you@example.com" />
-      <p className="hint">パスワードはいらないよ。届いたリンクを開くだけ。</p>
-      <button className="btn" disabled={busy} style={{ marginTop: 12 }}>{busy ? '送信中…' : 'ログインリンクを送る'}</button>
-    </form>
+    <div>
+      <button className="btn social" onClick={google} disabled={busy}>
+        <svg viewBox="0 0 18 18" aria-hidden="true">
+          <path d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z" fill="#4285F4"/>
+          <path d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z" fill="#34A853"/>
+          <path d="M3.97 10.72A5.41 5.41 0 0 1 3.68 9c0-.6.1-1.18.29-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.05l3.01-2.33z" fill="#FBBC05"/>
+          <path d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z" fill="#EA4335"/>
+        </svg>
+        Googleでログイン
+      </button>
+      <div className="or"><span>またはメールで</span></div>
+      <form onSubmit={submit}>
+        <label className="field" htmlFor="email" style={{ marginTop: 0 }}>メールアドレス</label>
+        <input id="email" className="input" type="email" autoComplete="email" value={email}
+               onChange={e => setEmail(e.target.value)} placeholder="you@example.com" />
+        <p className="hint">パスワードはいらないよ。届いたリンクを開くだけ。</p>
+        <button className="btn outline" disabled={busy} style={{ marginTop: 12 }}>{busy ? '送信中…' : 'ログインリンクを送る'}</button>
+      </form>
+    </div>
   );
 }
 
@@ -734,6 +759,15 @@ function MeTab({ user, toast, reloadKey, openLogin, openRules }) {
     await sb.auth.signOut();
   };
 
+  const [bye, setBye] = useState(false);
+  const deleteAccount = async () => {
+    setBye(false);
+    const { error } = await sb.rpc('delete_my_account');
+    if (error) return toast(errMsg(error));
+    await sb.auth.signOut();
+    toast('アカウントを削除したよ。今までありがとう');
+  };
+
   return (
     <div>
       <h2>アカウント</h2>
@@ -775,10 +809,18 @@ function MeTab({ user, toast, reloadKey, openLogin, openRules }) {
         </>
       )}
 
+      {!guest && (
+        <div style={{ textAlign: 'center', marginTop: 28 }}>
+          <button className="linkish" style={{ color: 'var(--danger)' }} onClick={() => setBye(true)}>アカウントを削除する</button>
+        </div>
+      )}
+
       <footer className="foot">
         <button className="linkish" onClick={openRules}>利用のきまり</button>
+        <a className="linkish" href="privacy.html">プライバシーポリシー</a>
       </footer>
 
+      {bye && <Confirm title="アカウントを削除する？" body="流したセトリ、届いたスタンプ、受け取った記録がすべて消えて、元に戻せないよ。" okLabel="削除する" danger onOk={deleteAccount} onCancel={() => setBye(false)} />}
       {del && <Confirm title="このセトリを削除する？" body="届いたスタンプも一緒に消えて、元に戻せないよ。" okLabel="削除する" danger onOk={remove} onCancel={() => setDel(null)} />}
     </div>
   );
@@ -871,9 +913,15 @@ function App() {
 
       <nav className="tabs" aria-label="メニュー">
         <div className="inner">
-          <button className={tab === 'receive' ? 'on' : ''} onClick={() => setTab('receive')}><span className="ico">✉</span>受け取る</button>
-          <button className={tab === 'create' ? 'on' : ''} onClick={() => setTab('create')}><span className="ico">✎</span>作る</button>
-          <button className={tab === 'me' ? 'on' : ''} onClick={() => setTab('me')}><span className="ico">◎</span>じぶん</button>
+          <button className={tab === 'receive' ? 'on' : ''} onClick={() => setTab('receive')}>
+            <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6v2.5c0 1 .6 1.7 1.6 2.4C18.3 9 19 10.7 19 13v5a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3v-5c0-2.3.7-4 2.4-5.1 1-.7 1.6-1.4 1.6-2.4z"/><path d="M8 15c1.3-.8 2.7-.8 4 0s2.7.8 4 0"/></svg>
+            受け取る</button>
+          <button className={tab === 'create' ? 'on' : ''} onClick={() => setTab('create')}>
+            <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>
+            作る</button>
+          <button className={tab === 'me' ? 'on' : ''} onClick={() => setTab('me')}>
+            <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></svg>
+            じぶん</button>
         </div>
       </nav>
 
