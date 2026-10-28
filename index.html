@@ -706,6 +706,12 @@ function CreateTab({ user, scenes, toast, onCreated, openLogin }) {
   return (
     <div>
       <h2>セトリを流す</h2>
+      {user.is_anonymous && (
+        <p className="hint" style={{ marginTop: -4 }}>
+          ゲストのままでも流せるよ。ただ、ゲストで流したセトリはこの端末のこのブラウザでしか見返せないから、
+          残したいなら<button className="linkish" style={{ padding: 0 }} onClick={openLogin}>ログイン</button>がおすすめ。
+        </p>
+      )}
 
       <label className="field">どんなときに聴く？</label>
       <div className="chips">
@@ -771,7 +777,7 @@ function MeTab({ user, toast, reloadKey, openLogin, openRules }) {
   const guest = !user || user.is_anonymous;
 
   const load = useCallback(async () => {
-    if (guest) { setList([]); return; }
+    if (!user) { setList([]); return; }
     const { data, error } = await sb.rpc('my_setlists');
     if (error) { toast(errMsg(error)); setList([]); return; }
     setList(data || []);
@@ -785,7 +791,7 @@ function MeTab({ user, toast, reloadKey, openLogin, openRules }) {
     const by = {};
     for (const t of res.data) (by[t.setlist_id] = by[t.setlist_id] || []).push(t);
     setTracksBy(by);
-  }, [guest]);
+  }, [user && user.id]);
 
   useEffect(() => { load(); }, [load, reloadKey]);
 
@@ -827,9 +833,10 @@ function MeTab({ user, toast, reloadKey, openLogin, openRules }) {
         )}
       </div>
 
-      {!guest && (
+      {(!guest || (list && list.length > 0)) && (
         <>
           <h2>あなたが流したセトリ</h2>
+          {guest && <p className="hint" style={{ marginTop: -4 }}>ゲストで流したセトリは、このブラウザを使い続けている間だけ見られるよ。</p>}
           {list === null && <div className="loading" style={{ padding: 20 }}>読み込み中…</div>}
           {list && list.length === 0 && <div className="card empty">まだセトリがないよ。「作る」から流してみよう。</div>}
           {list && list.map(s => (
