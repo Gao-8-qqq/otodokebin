@@ -154,6 +154,20 @@
   }
   .mood:active { transform: scale(.97); }
   .mood:disabled { opacity: .35; cursor: default; box-shadow: none; }
+  .mood.on {
+    opacity: 1;
+    background: color-mix(in srgb, var(--c) 22%, transparent);
+    box-shadow: 0 0 12px var(--c), 0 0 32px color-mix(in srgb, var(--c) 60%, transparent), inset 0 0 12px color-mix(in srgb, var(--c) 50%, transparent);
+  }
+  .mood.on b { font-weight: 700; }
+  .receive-bar {
+    position: sticky;
+    bottom: calc(76px + env(safe-area-inset-bottom));
+    margin-top: 16px;
+    padding: 10px 0;
+    background: linear-gradient(180deg, transparent, var(--night) 35%);
+    z-index: 5;
+  }
 
   /* ---- 届いたセトリ ---- */
   .from { color: var(--muted); font-size: 13px; margin: 0; }
@@ -531,6 +545,8 @@ function ReceiveTab({ scenes, toast, goCreate }) {
   const [stamp, setStamp] = useState(null);  // 送ったスタンプ
   const [confirm, setConfirm] = useState(null);
 
+  const [picked, setPicked] = useState(null);  // 選んだ気分（まだ受け取ってない）
+
   const receive = async (scene) => {
     setBusy(true); setNone(null);
     try {
@@ -620,13 +636,20 @@ function ReceiveTab({ scenes, toast, goCreate }) {
         </div>
       </section>
       <h3 className="sec" id="moods">いまの気分は？</h3>
-      <div className="moods">
+      <div className="moods" role="radiogroup" aria-label="いまの気分">
         {scenes.map((s, i) => (
-          <button key={s.id} className="mood" disabled={busy} onClick={() => receive(s)}
+          <button key={s.id} className={'mood' + (picked && picked.id === s.id ? ' on' : '')} disabled={busy}
+                  role="radio" aria-checked={!!picked && picked.id === s.id}
+                  onClick={() => { setPicked(p => (p && p.id === s.id) ? null : s); setNone(null); }}
                   style={{ '--c': TUBES[i % TUBES.length] }}>
             <b>{s.name}</b>
           </button>
         ))}
+      </div>
+      <div className="receive-bar">
+        <button className="btn" disabled={!picked || busy} onClick={() => receive(picked)}>
+          {busy ? 'ボトルを探してるよ…' : picked ? `「${picked.name}」のセトリを受け取る` : '気分を選んでね'}
+        </button>
       </div>
       {none && (
         <div className="card empty" style={{ marginTop: 14 }}>
