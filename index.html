@@ -790,7 +790,7 @@ function CreateTab({ user, scenes, toast, onCreated, openLogin, guestCanCreate }
       <label className="field" htmlFor="comment">ひとこと（任意）</label>
       <textarea id="comment" className="input" maxLength={100} value={comment}
                 onChange={e => setComment(e.target.value)} placeholder="例：駅まで歩くときに聴いてる" />
-      <p className="hint">{comment.length} / 100　URLやSNSのIDは書けないよ</p>
+      <p className="hint">{comment.length} / 100　URLやSNSのID、歌詞は書かないでね</p>
 
       <div style={{ marginTop: 16 }}>
         <button className="btn" disabled={!canSubmit} onClick={submit}>{busy ? '流しています…' : 'このセトリを流す'}</button>
@@ -935,8 +935,13 @@ function Rules({ onClose }) {
         <li>住所・電話番号・SNSのIDなど、個人を特定できる情報は書かない</li>
         <li>出会い目的や勧誘、宣伝のための利用は禁止</li>
         <li>曲は公式サービスのリンクだけを載せてね（違法アップロードのリンクは禁止）</li>
+        <li>歌詞は著作物なので、ひとことや紹介文に歌詞を書き写さないでね（曲名やアーティスト名の紹介はOK）</li>
         <li>きまりに反する投稿は、運営が予告なく非表示・削除することがあります</li>
       </ul>
+      <p style={{ fontSize: 13 }}>
+        <b>権利者の方へ</b>：掲載内容に権利上の問題がある場合は、
+        <a href="mailto:qx042039711@gmail.com">qx042039711@gmail.com</a> までご連絡ください。確認のうえ、速やかに非表示・削除などの対応をします。
+      </p>
       <button className="btn ghost" onClick={onClose}>閉じる</button>
     </Sheet>
   );
