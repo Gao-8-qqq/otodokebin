@@ -169,7 +169,13 @@
   .tthumb { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; flex: none; }
   .trow .meta { min-width: 0; flex: 1; }
   .trow .title { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .trow .svc { font-size: 12px; color: var(--muted); }
+  .trow .artist { font-size: 13px; color: #cfc9e6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trow .svc { font-size: 11px; color: var(--muted); }
+  .meta-row { display: flex; gap: 10px; align-items: center; margin-top: 6px; }
+  .meta-row .tthumb { width: 56px; height: 56px; }
+  .meta-inputs { flex: 1; min-width: 0; display: grid; gap: 6px; }
+  .toggle { background: none; border: 1px solid var(--wire); color: var(--text); border-radius: 999px; padding: 5px 14px; font-size: 13px; cursor: pointer; margin-top: 10px; }
+  .toggle:hover { border-color: var(--cyan); }
   .play {
     width: 32px; height: 32px; border-radius: 50%; flex: none; display: grid; place-items: center;
     background: var(--cyan); color: #04121c;
@@ -315,8 +321,15 @@ function detectService(raw) {
   return null;
 }
 
-// 曲名とサムネを取りに行く（取れなくても手入力でOK）
+// 曲名・アーティスト名・サムネを取りに行く（取れなくても手入力でOK）
+// まずSupabaseの track-info（song.link経由で全サービス対応）、だめならブラウザから直接
 async function fetchMeta(url, service) {
+  try {
+    const { data, error } = await sb.functions.invoke('track-info', { body: { url } });
+    if (!error && data && (data.title || data.artist)) {
+      return { title: data.title || '', artist: data.artist || '', thumbnail: data.thumbnail || '' };
+    }
+  } catch (e) { /* 次の方法へ */ }
   let endpoint = null;
   if (service === 'spotify') endpoint = 'https://open.spotify.com/oembed?url=' + encodeURIComponent(url);
   if (service === 'youtube') endpoint = 'https://noembed.com/embed?url=' + encodeURIComponent(url);
@@ -326,7 +339,8 @@ async function fetchMeta(url, service) {
     if (!r.ok) return {};
     const j = await r.json();
     if (j.error) return {};
-    return { title: j.title || '', thumbnail: j.thumbnail_url || '' };
+    const artist = service === 'youtube' ? (j.author_name || '').replace(/ - Topic$/, '') : '';
+    return { title: j.title || '', artist, thumbnail: j.thumbnail_url || '' };
   } catch (e) { return {}; }
 }
 
@@ -377,6 +391,7 @@ function TrackItem({ t, i }) {
         {t.thumbnail && <img className="tthumb" src={t.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer" />}
         <span className="meta">
           <div className="title">{label}</div>
+          {t.artist && <div className="artist">{t.artist}</div>}
           <div className="svc">{SERVICES[t.service]} で開く</div>
         </span>
         <span className="play" aria-hidden="true">
@@ -623,7 +638,7 @@ function ReceiveTab({ scenes, toast, goCreate }) {
 }
 
 // ===== 作る =====
-const emptyTrack = () => ({ url: '', title: '', thumbnail: '', service: null, loading: false });
+const emptyTrack = () => ({ url: '', title: '', artist: '', thumbnail: '', service: null, loading: false });
 
 function CreateTab({ user, scenes, toast, onCreated, openLogin }) {
   const [sceneId, setSceneId] = useState(null);
@@ -649,10 +664,16 @@ function CreateTab({ user, scenes, toast, onCreated, openLogin }) {
     const t = tracks[i];
     const service = detectService(t.url);
     update(i, { service });
-    if (!service || t.title) return;
+    if (!service || t.title || t.loading) return;
     update(i, { loading: true });
     const meta = await fetchMeta(t.url.trim(), service);
-    update(i, { loading: false, title: meta.title || '', thumbnail: meta.thumbnail || '' });
+    setTracks(ts => ts.map((x, j) => j !== i ? x : {
+      ...x,
+      loading: false,
+      title: x.title || meta.title || '',
+      artist: x.artist || meta.artist || '',
+      thumbnail: meta.thumbnail || '',
+    }));
   };
 
   const filled = tracks.filter(t => t.url.trim());
@@ -667,6 +688,7 @@ function CreateTab({ user, scenes, toast, onCreated, openLogin }) {
         url: t.url.trim(),
         service: detectService(t.url),
         title: t.title.trim() || null,
+        artist: t.artist.trim() || null,
         thumbnail: t.thumbnail || null,
       }));
       const { error } = await sb.rpc('create_setlist', { p_scene_id: sceneId, p_comment: comment, p_tracks: payload });
@@ -705,11 +727,19 @@ function CreateTab({ user, scenes, toast, onCreated, openLogin }) {
             </div>
             <input className="input" inputMode="url" placeholder="YouTube / Spotify / Apple Music / Amazon Music のリンク"
                    value={t.url}
-                   onChange={e => update(i, { url: e.target.value, service: null, title: '', thumbnail: '' })}
+                   onChange={e => update(i, { url: e.target.value, service: null, title: '', artist: '', thumbnail: '' })}
                    onBlur={() => onUrlBlur(i)} />
-            <input className="input" placeholder={t.loading ? '曲名を探してるよ…' : '曲名（任意・自動で入ることもある）'}
-                   value={t.title} maxLength={200}
-                   onChange={e => update(i, { title: e.target.value })} />
+            <div className="meta-row">
+              {t.thumbnail && <img className="tthumb" src={t.thumbnail} alt="" referrerPolicy="no-referrer" />}
+              <div className="meta-inputs">
+                <input className="input" placeholder={t.loading ? '曲名を探してるよ…' : '曲名（自動で入るよ）'}
+                       value={t.title} maxLength={200}
+                       onChange={e => update(i, { title: e.target.value })} />
+                <input className="input" placeholder={t.loading ? 'アーティストを探してるよ…' : 'アーティスト名（自動で入るよ）'}
+                       value={t.artist} maxLength={200}
+                       onChange={e => update(i, { artist: e.target.value })} />
+              </div>
+            </div>
             {bad && <p className="hint err">対応してないリンクみたい。共有ボタンからコピーしたリンクを貼ってね。</p>}
           </div>
         );
@@ -736,6 +766,8 @@ function CreateTab({ user, scenes, toast, onCreated, openLogin }) {
 function MeTab({ user, toast, reloadKey, openLogin, openRules }) {
   const [list, setList] = useState(null);
   const [del, setDel] = useState(null);
+  const [tracksBy, setTracksBy] = useState({});
+  const [open, setOpen] = useState({});
   const guest = !user || user.is_anonymous;
 
   const load = useCallback(async () => {
@@ -743,6 +775,16 @@ function MeTab({ user, toast, reloadKey, openLogin, openRules }) {
     const { data, error } = await sb.rpc('my_setlists');
     if (error) { toast(errMsg(error)); setList([]); return; }
     setList(data || []);
+    const ids = (data || []).map(s => s.setlist_id);
+    if (!ids.length) { setTracksBy({}); return; }
+    const res = await sb.from('tracks')
+      .select('setlist_id,url,service,title,artist,thumbnail,position')
+      .in('setlist_id', ids)
+      .order('position');
+    if (res.error) return;
+    const by = {};
+    for (const t of res.data) (by[t.setlist_id] = by[t.setlist_id] || []).push(t);
+    setTracksBy(by);
   }, [guest]);
 
   useEffect(() => { load(); }, [load, reloadKey]);
@@ -797,7 +839,20 @@ function MeTab({ user, toast, reloadKey, openLogin, openRules }) {
                 <button className="linkish" onClick={() => setDel(s.setlist_id)}>削除</button>
               </div>
               {s.comment && <div className="note">{s.comment}</div>}
-              <div className="hint">{s.deliveries}人に届いた</div>
+              {tracksBy[s.setlist_id] && (
+                <>
+                  <button className="toggle" aria-expanded={!!open[s.setlist_id]}
+                          onClick={() => setOpen(o => ({ ...o, [s.setlist_id]: !o[s.setlist_id] }))}>
+                    {open[s.setlist_id] ? '曲を閉じる' : `曲を見る（${tracksBy[s.setlist_id].length}曲）`}
+                  </button>
+                  {open[s.setlist_id] && (
+                    <ul className="tracklist">
+                      {tracksBy[s.setlist_id].map((t, i) => <TrackItem key={i} t={t} i={i} />)}
+                    </ul>
+                  )}
+                </>
+              )}
+              <div className="hint" style={{ marginTop: 10 }}>{s.deliveries}人に届いた</div>
               <div className="counts">
                 {STAMPS.filter(st => s.stamps && s.stamps[st.id]).map(st => (
                   <span className="count" key={st.id}>{st.label}<b>{s.stamps[st.id]}</b></span>
