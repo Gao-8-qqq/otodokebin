@@ -12,7 +12,9 @@
 <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.26.4/babel.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <style>
   :root {
     --night: #070b18;
@@ -301,17 +303,258 @@
 const { useState, useEffect, useCallback } = React;
 
 // ===== 設定 =====
-const SUPABASE_URL = 'https://xqnhxjepxzglmsnmdrvm.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_FRoeyOoJFYtM7QsQ8cjuqw_2yqFF7bj';
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+// Firebase（音届便専用。ブラウザに出してよい公開設定）
+const FIREBASE_CONFIG = {
+  apiKey: 'AIzaSyBDQ0SQGRdi8tViM3bBaYLew3GvcLyTilc',
+  authDomain: 'otodokebin-4cea6.firebaseapp.com',
+  projectId: 'otodokebin-4cea6',
+  storageBucket: 'otodokebin-4cea6.firebasestorage.app',
+  messagingSenderId: '1054532765944',
+  appId: '1:1054532765944:web:598ea9708415beb1fd130d',
+};
+firebase.initializeApp(FIREBASE_CONFIG);
+const auth = firebase.auth();
+auth.languageCode = 'ja';
+const db = firebase.firestore();
+const FV = firebase.firestore.FieldValue;
+const googleProvider = new firebase.auth.GoogleAuthProvider();
+
+// 曲名の自動取得（Supabaseの公開関数 track-info を使う。ログイン情報は送らない）
+const TRACK_INFO_URL = 'https://xqnhxjepxzglmsnmdrvm.supabase.co/functions/v1/track-info';
+const TRACK_INFO_KEY = 'sb_publishable_FRoeyOoJFYtM7QsQ8cjuqw_2yqFF7bj';
+
+// ゲストでもセトリを作れるか（firestore.rules の guestCanCreate() と合わせる）
+const GUEST_CAN_CREATE = true;
+
+const SCENES = [
+  { id: 1, name: '悲しい時' }, { id: 2, name: '嬉しい時' }, { id: 3, name: '通勤通学中' },
+  { id: 4, name: '作業中' }, { id: 5, name: '子育て中' }, { id: 6, name: '家事中' },
+  { id: 7, name: '眠れない夜' }, { id: 8, name: '朝起きた時' }, { id: 9, name: '失恋した時' },
+  { id: 10, name: '恋してる時' }, { id: 11, name: 'ドライブ' },
+];
+const sceneName = (id) => (SCENES.find(s => s.id === id) || {}).name || '';
+
+const toUser = (u) => u ? { id: u.uid, is_anonymous: u.isAnonymous, email: u.email || '' } : null;
+const authChanged = () => window.dispatchEvent(new Event('authchange'));
 
 // ゲストは「受け取る」「流す」を押したときに初めて作る（開いただけでは作らない）
 async function ensureGuest() {
-  const { data } = await sb.auth.getSession();
-  if (data.session) return;
-  const res = await sb.auth.signInAnonymously();
-  if (res.error) throw new Error('ゲストで始められなかった…（' + res.error.message + '）');
+  if (auth.currentUser) return auth.currentUser;
+  try {
+    const cred = await auth.signInAnonymously();
+    return cred.user;
+  } catch (e) {
+    throw new Error('ゲストで始められなかった…（' + (e.code || e.message) + '）');
+  }
 }
+
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+function randomTag() {
+  const a = new Uint8Array(12); crypto.getRandomValues(a);
+  return Array.from(a, b => b.toString(16).padStart(2, '0')).join('');
+}
+// 日本時間の日付（ルール側と同じ形：2026-10-29 → "2026-10-29"、ゼロ埋めなし）
+function jstDay() {
+  const d = new Date(Date.now() + 9 * 3600 * 1000);
+  return d.getUTCFullYear() + '-' + (d.getUTCMonth() + 1) + '-' + d.getUTCDate();
+}
+async function readDaily(uid) {
+  const ref = db.doc('users/' + uid + '/daily/' + jstDay());
+  const snap = await ref.get();
+  const d = snap.exists ? snap.data() : {};
+  return { ref, recv: d.recv || 0, made: d.made || 0 };
+}
+// 作者タグ（ブロック用のランダムな印。ユーザーIDとは別物）
+async function myTag(uid) {
+  const ref = db.doc('users/' + uid);
+  const snap = await ref.get();
+  if (snap.exists) return snap.data().tag;
+  const tag = randomTag();
+  await ref.set({ tag });
+  return tag;
+}
+async function deleteAll(query) {
+  const snap = await query.get();
+  for (let i = 0; i < snap.docs.length; i += 400) {
+    const b = db.batch();
+    snap.docs.slice(i, i + 400).forEach(d => b.delete(d.ref));
+    await b.commit();
+  }
+}
+
+const api = {
+  async createSetlist(sceneId, comment, tracks) {
+    const u = await ensureGuest();
+    if (u.isAnonymous && !GUEST_CAN_CREATE) throw new Error('login_required');
+    if (tracks.length < 3 || tracks.length > 10) throw new Error('tracks_must_be_3_to_10');
+    const c = (comment || '').trim() || null;
+    if (c && (c.length > 100 || /(https?:\/\/|www\.|\.com|@[a-z0-9_]{2,})/i.test(c))) throw new Error('setlists_comment_check');
+    const tag = await myTag(u.uid);
+    const day = await readDaily(u.uid);
+    if (day.made >= (u.isAnonymous ? 3 : 20)) throw new Error('create_limit_reached');
+    const ref = db.collection('setlists').doc();
+    const b = db.batch();
+    b.set(ref, {
+      scene: sceneId, comment: c,
+      tracks: tracks.map(t => ({
+        url: t.url, service: t.service,
+        title: t.title ? t.title.slice(0, 200) : null,
+        artist: t.artist ? t.artist.slice(0, 200) : null,
+        thumbnail: t.thumbnail && /^https:\/\//.test(t.thumbnail) ? t.thumbnail.slice(0, 500) : null,
+      })),
+      createdAt: FV.serverTimestamp(),
+      bucket: Math.floor(Math.random() * 10),
+      author: tag, delivered: 0, stamps: {}, reports: 0, hidden: false,
+    });
+    b.set(db.doc('owners/' + ref.id), { uid: u.uid, createdAt: FV.serverTimestamp() });
+    b.set(day.ref, { recv: day.recv, made: day.made + 1 });
+    await b.commit();
+    return ref.id;
+  },
+
+  async receive(sceneId) {
+    const u = await ensureGuest();
+    const day = await readDaily(u.uid);
+    if (day.recv >= (u.isAnonymous ? 3 : 10)) throw new Error('daily_limit_reached');
+    const [recvSnap, ownSnap, blockSnap] = await Promise.all([
+      db.collection('users/' + u.uid + '/received').get(),
+      db.collection('owners').where('uid', '==', u.uid).get(),
+      db.collection('users/' + u.uid + '/blocks').get(),
+    ]);
+    const skip = new Set([...recvSnap.docs.map(d => d.id), ...ownSnap.docs.map(d => d.id)]);
+    const blocked = new Set(blockSnap.docs.map(d => d.id));
+    let fails = 0;
+    for (const bucket of shuffle([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])) {
+      const q = await db.collection('setlists')
+        .where('scene', '==', sceneId).where('hidden', '==', false).where('bucket', '==', bucket)
+        .limit(50).get();
+      const cands = shuffle(q.docs.filter(d => !skip.has(d.id) && !blocked.has(d.data().author)));
+      for (const d of cands) {
+        try {
+          const b = db.batch();
+          b.set(d.ref.collection('deliveries').doc(u.uid), { at: FV.serverTimestamp() });
+          b.update(d.ref, { delivered: FV.increment(1) });
+          b.set(db.doc('users/' + u.uid + '/received/' + d.id), { at: FV.serverTimestamp() });
+          b.set(day.ref, { recv: day.recv + 1, made: day.made });
+          await b.commit();
+          const s = d.data();
+          return { setlist_id: d.id, scene: sceneName(s.scene), tracks: s.tracks || [], comment: s.comment, author: s.author };
+        } catch (e) {
+          if (e.code !== 'permission-denied' || ++fails >= 5) throw e;
+          skip.add(d.id);
+        }
+      }
+    }
+    return null;
+  },
+
+  async stamp(setlistId, stamp) {
+    const u = auth.currentUser;
+    const ref = db.doc('setlists/' + setlistId);
+    const b = db.batch();
+    b.set(ref.collection('reactions').doc(u.uid), { stamp, at: FV.serverTimestamp() });
+    b.update(ref, { ['stamps.' + stamp]: FV.increment(1) });
+    await b.commit();
+  },
+
+  async report(setlistId) {
+    const u = auth.currentUser;
+    const ref = db.doc('setlists/' + setlistId);
+    const cur = (await ref.get()).data();
+    const b = db.batch();
+    b.set(db.doc('reports/' + setlistId + '_' + u.uid), { setlist: setlistId, at: FV.serverTimestamp() });
+    b.update(ref, { reports: FV.increment(1), hidden: !!cur.hidden || cur.reports + 1 >= 3 });
+    await b.commit();
+  },
+
+  async block(authorTag) {
+    const u = auth.currentUser;
+    await db.doc('users/' + u.uid + '/blocks/' + authorTag).set({ at: FV.serverTimestamp() });
+  },
+
+  async mySetlists() {
+    const u = auth.currentUser;
+    if (!u) return [];
+    const own = await db.collection('owners').where('uid', '==', u.uid).get();
+    const rows = await Promise.all(own.docs.map(async o => {
+      const s = await db.doc('setlists/' + o.id).get();
+      if (!s.exists) return null;
+      const d = s.data();
+      return {
+        setlist_id: o.id, scene: sceneName(d.scene), comment: d.comment, tracks: d.tracks || [],
+        deliveries: d.delivered || 0, stamps: d.stamps || {}, hidden: !!d.hidden,
+        created: o.data().createdAt ? o.data().createdAt.toMillis() : 0,
+      };
+    }));
+    return rows.filter(Boolean).sort((a, b) => b.created - a.created);
+  },
+
+  async deleteSetlist(setlistId) {
+    const ref = db.doc('setlists/' + setlistId);
+    await deleteAll(ref.collection('deliveries'));
+    await deleteAll(ref.collection('reactions'));
+    const b = db.batch();
+    b.delete(ref);
+    b.delete(db.doc('owners/' + setlistId));
+    await b.commit();
+  },
+
+  // アカウント削除：流したセトリ（届いた記録・スタンプ込み）、受け取った記録、ブロック、アカウントを消す
+  async deleteAccount(password) {
+    const u = auth.currentUser;
+    const providers = u.providerData.map(p => p.providerId);
+    if (providers.includes('google.com')) await u.reauthenticateWithPopup(googleProvider);
+    else if (providers.includes('password')) {
+      await u.reauthenticateWithCredential(firebase.auth.EmailAuthProvider.credential(u.email, password || ''));
+    }
+    const own = await db.collection('owners').where('uid', '==', u.uid).get();
+    for (const o of own.docs) await api.deleteSetlist(o.id);
+    await deleteAll(db.collection('users/' + u.uid + '/received'));
+    await deleteAll(db.collection('users/' + u.uid + '/blocks'));
+    const daily = await db.collection('users/' + u.uid + '/daily').get();
+    for (const d of daily.docs) { if (d.id !== jstDay()) await d.ref.delete(); }
+    await db.doc('users/' + u.uid).delete();
+    await u.delete();
+  },
+
+  async loginGoogle() {
+    const cur = auth.currentUser;
+    if (cur && cur.isAnonymous) {
+      try {
+        await cur.linkWithPopup(googleProvider);
+        await cur.getIdToken(true);
+        authChanged();
+        return;
+      } catch (e) {
+        if (e.code === 'auth/credential-already-in-use' && e.credential) { await auth.signInWithCredential(e.credential); return; }
+        throw e;
+      }
+    }
+    await auth.signInWithPopup(googleProvider);
+  },
+
+  async signUpEmail(email, password) {
+    const cur = auth.currentUser;
+    if (cur && cur.isAnonymous) {
+      await cur.linkWithCredential(firebase.auth.EmailAuthProvider.credential(email, password));
+      await cur.getIdToken(true);
+      authChanged();
+      return;
+    }
+    await auth.createUserWithEmailAndPassword(email, password);
+  },
+
+  async signInEmail(email, password) {
+    await auth.signInWithEmailAndPassword(email, password);
+  },
+
+  async resetPassword(email) {
+    await auth.sendPasswordResetEmail(email);
+  },
+};
 
 const STAMPS = [
   { id: 'sasatta', label: '刺さった' },
@@ -346,12 +589,16 @@ function detectService(raw) {
 }
 
 // 曲名・アーティスト名・サムネを取りに行く（取れなくても手入力でOK）
-// まずSupabaseの track-info（song.link経由で全サービス対応）、だめならブラウザから直接
+// まず track-info（YouTube・Spotify・Apple Music対応）、だめならブラウザから直接
 async function fetchMeta(url, service) {
   try {
-    await ensureGuest();
-    const { data, error } = await sb.functions.invoke('track-info', { body: { url } });
-    if (!error && data && (data.title || data.artist)) {
+    const r = await fetch(TRACK_INFO_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: TRACK_INFO_KEY },
+      body: JSON.stringify({ url }),
+    });
+    const data = r.ok ? await r.json() : null;
+    if (data && (data.title || data.artist)) {
       return { title: data.title || '', artist: data.artist || '', thumbnail: data.thumbnail || '' };
     }
   } catch (e) { /* 次の方法へ */ }
@@ -369,7 +616,23 @@ async function fetchMeta(url, service) {
   } catch (e) { return {}; }
 }
 
+const AUTH_ERRORS = {
+  'auth/email-already-in-use': 'このメールはもう登録されてるよ。「ログイン」から入ってね。',
+  'auth/invalid-credential': 'メールアドレスかパスワードが違うみたい。',
+  'auth/wrong-password': 'パスワードが違うみたい。',
+  'auth/user-not-found': 'そのメールアドレスは登録されてないみたい。',
+  'auth/invalid-email': 'メールアドレスの形がちがうみたい。',
+  'auth/weak-password': 'パスワードは6文字以上にしてね。',
+  'auth/missing-password': 'パスワードを入れてね。',
+  'auth/too-many-requests': '何度も試したみたい。少し時間をおいてね。',
+  'auth/requires-recent-login': '安全のため、いったんログインし直してから試してね。',
+  'auth/popup-blocked': 'ポップアップがブロックされたみたい。許可してもう一度押してね。',
+  'auth/operation-not-allowed': 'このログイン方法はまだ使えないみたい。',
+  'auth/network-request-failed': '通信がうまくいかなかったみたい。電波のいいところでもう一度。',
+  'permission-denied': 'その操作はできないみたい。',
+};
 function errMsg(e) {
+  if (e && e.code && AUTH_ERRORS[e.code]) return AUTH_ERRORS[e.code];
   const m = (e && (e.message || e.details)) || String(e);
   if (m.includes('daily_limit_reached')) return '今日の受け取りはここまで。また明日届くよ。';
   if (m.includes('login_required')) return 'この機能はログインが必要だよ。';
@@ -485,45 +748,44 @@ function NeonBottle() {
 
 // ===== ログイン =====
 function LoginForm({ user, onDone, toast }) {
+  const [mode, setMode] = useState('signup');  // signup | login | reset
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
 
-  const submit = async (e) => {
+  const run = async (fn) => {
+    setBusy(true);
+    try { await fn(); }
+    catch (err) {
+      if (err && (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request')) return;
+      toast(errMsg(err));
+    } finally { setBusy(false); }
+  };
+
+  const submit = (e) => {
     e.preventDefault();
     if (!email.includes('@')) return toast('メールアドレスを入れてね');
-    setBusy(true);
-    try {
-      // ゲストのままメールを登録すると、ゲスト時代の履歴を引き継げる
-      if (user && user.is_anonymous) {
-        const { error } = await sb.auth.updateUser({ email }, { emailRedirectTo: REDIRECT_TO });
-        if (!error) { setSent(true); return; }
-        if (!/already|exists|registered/i.test(error.message)) throw error;
-      }
-      // すでに登録済みのメールはログインリンクを送る
-      const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: REDIRECT_TO } });
-      if (error) throw error;
-      setSent(true);
-    } catch (err) {
-      toast(errMsg(err));
-    } finally {
-      setBusy(false);
-    }
+    if (mode === 'reset') return run(async () => { await api.resetPassword(email.trim()); setSent(true); });
+    if (password.length < 6) return toast('パスワードは6文字以上にしてね');
+    run(async () => {
+      if (mode === 'signup') await api.signUpEmail(email.trim(), password);
+      else await api.signInEmail(email.trim(), password);
+      toast('ログインしたよ');
+      onDone && onDone();
+    });
   };
+
+  const google = () => run(async () => { await api.loginGoogle(); toast('ログインしたよ'); onDone && onDone(); });
 
   if (sent) {
     return (
       <div>
-        <p className="hint ok">メールを送ったよ。届いたリンクを開くとログインできる。</p>
-        {onDone && <button className="btn ghost" onClick={onDone}>閉じる</button>}
+        <p className="hint ok">パスワードを作り直すメールを送ったよ。届いたリンクから新しいパスワードを決めてね。</p>
+        <button className="btn ghost" onClick={() => { setSent(false); setMode('login'); }}>ログインにもどる</button>
       </div>
     );
   }
-  const google = async () => {
-    setBusy(true);
-    const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: REDIRECT_TO } });
-    if (error) { setBusy(false); toast(errMsg(error)); }
-  };
 
   return (
     <div>
@@ -537,13 +799,36 @@ function LoginForm({ user, onDone, toast }) {
         Googleでログイン
       </button>
       <div className="or"><span>またはメールで</span></div>
+      <div className="chips" role="tablist" style={{ marginBottom: 10 }}>
+        <button className={'chip' + (mode === 'signup' ? ' on' : '')} onClick={() => setMode('signup')}>はじめて登録</button>
+        <button className={'chip' + (mode === 'login' ? ' on' : '')} onClick={() => setMode('login')}>ログイン</button>
+      </div>
       <form onSubmit={submit}>
         <label className="field" htmlFor="email" style={{ marginTop: 0 }}>メールアドレス</label>
         <input id="email" className="input" type="email" autoComplete="email" value={email}
                onChange={e => setEmail(e.target.value)} placeholder="you@example.com" />
-        <p className="hint">パスワードはいらないよ。届いたリンクを開くだけ。</p>
-        <button className="btn outline" disabled={busy} style={{ marginTop: 12 }}>{busy ? '送信中…' : 'ログインリンクを送る'}</button>
+        {mode !== 'reset' && (
+          <>
+            <label className="field" htmlFor="pw">パスワード（6文字以上）</label>
+            <input id="pw" className="input" type="password" value={password}
+                   autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                   onChange={e => setPassword(e.target.value)} />
+          </>
+        )}
+        <button className="btn outline" disabled={busy} style={{ marginTop: 12 }}>
+          {busy ? '送信中…' : mode === 'signup' ? '登録する' : mode === 'login' ? 'ログインする' : '作り直しメールを送る'}
+        </button>
       </form>
+      {mode === 'login' && (
+        <p className="hint" style={{ textAlign: 'center' }}>
+          <button className="linkish" onClick={() => setMode('reset')}>パスワードを忘れたとき</button>
+        </p>
+      )}
+      {mode === 'reset' && (
+        <p className="hint" style={{ textAlign: 'center' }}>
+          <button className="linkish" onClick={() => setMode('login')}>ログインにもどる</button>
+        </p>
+      )}
     </div>
   );
 }
@@ -561,9 +846,7 @@ function ReceiveTab({ scenes, toast, goCreate }) {
   const receive = async (scene) => {
     setBusy(true); setNone(null);
     try {
-      await ensureGuest();
-      const { data, error } = await sb.rpc('receive_setlist', { p_scene_id: scene.id });
-      if (error) throw error;
+      const data = await api.receive(scene.id);
       if (!data) { setNone(scene.name); return; }
       setGot(data); setStamp(null);
     } catch (e) {
@@ -576,22 +859,22 @@ function ReceiveTab({ scenes, toast, goCreate }) {
   const sendStamp = async (id) => {
     if (stamp) return;
     setStamp(id);
-    const { error } = await sb.from('reactions').insert({ delivery_id: got.delivery_id, setlist_id: got.setlist_id, stamp: id });
-    if (error) { setStamp(null); toast(errMsg(error)); return; }
+    try { await api.stamp(got.setlist_id, id); }
+    catch (e) { setStamp(null); toast(e.code === 'permission-denied' ? 'もう送信済みだよ。' : errMsg(e)); return; }
     toast('作った人にこっそり届けたよ');
   };
 
   const report = async () => {
     setConfirm(null);
-    const { error } = await sb.from('reports').insert({ target_type: 'setlist', target_id: got.setlist_id });
-    if (error) return toast(errMsg(error));
+    try { await api.report(got.setlist_id); }
+    catch (e) { return toast(e.code === 'permission-denied' ? 'もう通報済みだよ。' : errMsg(e)); }
     toast('通報したよ。ありがとう');
   };
 
   const block = async () => {
     setConfirm(null);
-    const { error } = await sb.rpc('block_author', { p_delivery_id: got.delivery_id });
-    if (error) return toast(errMsg(error));
+    try { await api.block(got.author); }
+    catch (e) { return toast(errMsg(e)); }
     toast('この人のセトリはもう届かないよ');
     setGot(null);
   };
@@ -687,7 +970,7 @@ function CreateTab({ user, scenes, toast, onCreated, openLogin, guestCanCreate }
       <div>
         <h2>セトリを流す</h2>
         <div className="card">
-          <p style={{ marginTop: 0 }}>セトリを作るにはログインが必要だよ。メールアドレスだけでOK。</p>
+          <p style={{ marginTop: 0 }}>セトリを作るにはログインが必要だよ。Googleかメールアドレスで登録できる。</p>
           <button className="btn" onClick={openLogin}>ログインする</button>
         </div>
       </div>
@@ -727,9 +1010,7 @@ function CreateTab({ user, scenes, toast, onCreated, openLogin, guestCanCreate }
         artist: t.artist.trim() || null,
         thumbnail: t.thumbnail || null,
       }));
-      await ensureGuest();
-      const { error } = await sb.rpc('create_setlist', { p_scene_id: sceneId, p_comment: comment, p_tracks: payload });
-      if (error) throw error;
+      await api.createSetlist(sceneId, comment, payload);
       toast('セトリを流したよ。誰かに届きますように');
       setSceneId(null); setTracks([emptyTrack(), emptyTrack(), emptyTrack()]); setComment('');
       onCreated();
@@ -815,42 +1096,42 @@ function MeTab({ user, toast, reloadKey, openLogin, openRules }) {
 
   const load = useCallback(async () => {
     if (!user) { setList([]); return; }
-    const { data, error } = await sb.rpc('my_setlists');
-    if (error) { toast(errMsg(error)); setList([]); return; }
-    setList(data || []);
-    const ids = (data || []).map(s => s.setlist_id);
-    if (!ids.length) { setTracksBy({}); return; }
-    const res = await sb.from('tracks')
-      .select('setlist_id,url,service,title,artist,thumbnail,position')
-      .in('setlist_id', ids)
-      .order('position');
-    if (res.error) return;
-    const by = {};
-    for (const t of res.data) (by[t.setlist_id] = by[t.setlist_id] || []).push(t);
-    setTracksBy(by);
+    try {
+      const data = await api.mySetlists();
+      setList(data);
+      const by = {};
+      for (const s of data) by[s.setlist_id] = s.tracks;
+      setTracksBy(by);
+    } catch (e) { toast(errMsg(e)); setList([]); }
   }, [user && user.id]);
 
   useEffect(() => { load(); }, [load, reloadKey]);
 
   const remove = async () => {
     const id = del; setDel(null);
-    const { error } = await sb.from('setlists').delete().eq('id', id);
-    if (error) return toast(errMsg(error));
+    try { await api.deleteSetlist(id); }
+    catch (e) { return toast(errMsg(e)); }
     toast('セトリを削除したよ');
     load();
   };
 
   const logout = async () => {
-    await sb.auth.signOut();
+    await auth.signOut();
   };
 
   const [bye, setBye] = useState(false);
+  const [byePw, setByePw] = useState('');
+  const [byeBusy, setByeBusy] = useState(false);
+  const usesPassword = !!(auth.currentUser && auth.currentUser.providerData.some(p => p.providerId === 'password'));
   const deleteAccount = async () => {
-    setBye(false);
-    const { error } = await sb.rpc('delete_my_account');
-    if (error) return toast(errMsg(error));
-    await sb.auth.signOut();
-    toast('アカウントを削除したよ。今までありがとう');
+    setByeBusy(true);
+    try {
+      await api.deleteAccount(byePw);
+      setBye(false); setByePw('');
+      toast('アカウントを削除したよ。今までありがとう');
+    } catch (e) {
+      if (!(e && (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request'))) toast(errMsg(e));
+    } finally { setByeBusy(false); }
   };
 
   return (
@@ -896,7 +1177,7 @@ function MeTab({ user, toast, reloadKey, openLogin, openRules }) {
                   )}
                 </>
               )}
-              <div className="hint" style={{ marginTop: 10 }}>{s.deliveries}人に届いた</div>
+              <div className="hint" style={{ marginTop: 10 }}>{s.deliveries}人に届いた{s.hidden && '　・通報が多かったため、今は届けられていないよ'}</div>
               <div className="counts">
                 {STAMPS.filter(st => s.stamps && s.stamps[st.id]).map(st => (
                   <span className="count" key={st.id}>{st.label}<b>{s.stamps[st.id]}</b></span>
@@ -919,7 +1200,20 @@ function MeTab({ user, toast, reloadKey, openLogin, openRules }) {
         <a className="linkish" href="privacy.html">プライバシーポリシー</a>
       </footer>
 
-      {bye && <Confirm title="アカウントを削除する？" body="流したセトリ、届いたスタンプ、受け取った記録がすべて消えて、元に戻せないよ。" okLabel="削除する" danger onOk={deleteAccount} onCancel={() => setBye(false)} />}
+      {bye && (
+        <Sheet onClose={() => !byeBusy && setBye(false)}>
+          <h3>アカウントを削除する？</h3>
+          <p>流したセトリ、届いたスタンプ、受け取った記録がすべて消えて、元に戻せないよ。{usesPassword ? '確認のため、パスワードを入れてね。' : '確認のため、もう一度Googleでログインしてもらうよ。'}</p>
+          {usesPassword && (
+            <input className="input" type="password" autoComplete="current-password" placeholder="パスワード"
+                   value={byePw} onChange={e => setByePw(e.target.value)} style={{ marginBottom: 12 }} />
+          )}
+          <div className="row">
+            <button className="btn ghost" disabled={byeBusy} onClick={() => setBye(false)}>やめる</button>
+            <button className="btn danger" disabled={byeBusy || (usesPassword && !byePw)} onClick={deleteAccount}>{byeBusy ? '削除中…' : '削除する'}</button>
+          </div>
+        </Sheet>
+      )}
       {del && <Confirm title="このセトリを削除する？" body="届いたスタンプも一緒に消えて、元に戻せないよ。" okLabel="削除する" danger onOk={remove} onCancel={() => setDel(null)} />}
     </div>
   );
@@ -949,8 +1243,8 @@ function Rules({ onClose }) {
 // ===== 全体 =====
 function App() {
   const [user, setUser] = useState(undefined);
-  const [scenes, setScenes] = useState([]);
-  const [guestCanCreate, setGuestCanCreate] = useState(false);
+  const scenes = SCENES;
+  const guestCanCreate = GUEST_CAN_CREATE;
   const [tab, setTab] = useState('receive');
   const [toastText, setToastText] = useState('');
   const [loginOpen, setLoginOpen] = useState(false);
@@ -965,23 +1259,17 @@ function App() {
   }, []);
 
   useEffect(() => {
-    let alive = true;
-    sb.auth.getSession().then(({ data }) => {
-      if (alive) setUser(data.session ? data.session.user : null);
+    const unsub = auth.onAuthStateChanged(u => {
+      setUser(toUser(u));
+      if (u && !u.isAnonymous) setLoginOpen(false);
     });
-    const { data: sub } = sb.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT') { setUser(null); return; }
-      if (session) setUser(session.user);
-      if (event === 'SIGNED_IN' && session && !session.user.is_anonymous) setLoginOpen(false);
-    });
-    sb.from('app_settings').select('guest_can_create').eq('id', 1).maybeSingle().then(({ data }) => {
-      setGuestCanCreate(!!(data && data.guest_can_create));
-    });
-    sb.from('scenes').select('id,name').order('sort_order').then(({ data, error }) => {
-      if (error) setFatal('シーンを読み込めなかった…（' + error.message + '）');
-      else setScenes(data || []);
-    });
-    return () => { alive = false; sub.subscription.unsubscribe(); };
+    const refresh = () => {
+      const u = auth.currentUser;
+      setUser(toUser(u));
+      if (u && !u.isAnonymous) setLoginOpen(false);
+    };
+    window.addEventListener('authchange', refresh);
+    return () => { unsub(); window.removeEventListener('authchange', refresh); };
   }, []);
 
   if (user === undefined) return <div className="loading">読み込み中…</div>;
@@ -1031,7 +1319,7 @@ function App() {
       {loginOpen && (
         <Sheet onClose={() => setLoginOpen(false)}>
           <h3>ログイン</h3>
-          <p>ゲストで受け取った履歴は、はじめてのメール登録なら引き継がれるよ。</p>
+          <p>ゲストで使っていた記録は、はじめての登録なら引き継がれるよ。</p>
           <LoginForm user={user} toast={toast} onDone={() => setLoginOpen(false)} />
         </Sheet>
       )}
